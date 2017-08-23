@@ -31,7 +31,7 @@
 #define BNX2X_PMD_VER_PREFIX "BNX2X PMD"
 #define BNX2X_PMD_VERSION_MAJOR 1
 #define BNX2X_PMD_VERSION_MINOR 0
-#define BNX2X_PMD_VERSION_REVISION 1
+#define BNX2X_PMD_VERSION_REVISION 5
 #define BNX2X_PMD_VERSION_PATCH 1
 
 static inline const char *
@@ -120,7 +120,7 @@ static int bnx2x_alloc_mem(struct bnx2x_softc *sc);
 static void bnx2x_free_mem(struct bnx2x_softc *sc);
 static int bnx2x_alloc_fw_stats_mem(struct bnx2x_softc *sc);
 static void bnx2x_free_fw_stats_mem(struct bnx2x_softc *sc);
-static __attribute__ ((noinline))
+static __rte_noinline
 int bnx2x_nic_load(struct bnx2x_softc *sc);
 
 static int bnx2x_handle_sp_tq(struct bnx2x_softc *sc);
@@ -178,7 +178,7 @@ bnx2x_dma_alloc(struct bnx2x_softc *sc, size_t size, struct bnx2x_dma *dma,
 
 	/* Caller must take care that strlen(mz_name) < RTE_MEMZONE_NAMESIZE */
 	z = rte_memzone_reserve_aligned(mz_name, (uint64_t) (size),
-					rte_lcore_to_socket_id(rte_lcore_id()),
+					SOCKET_ID_ANY,
 					0, align);
 	if (z == NULL) {
 		PMD_DRV_LOG(ERR, "DMA alloc failed for %s", msg);
@@ -887,7 +887,7 @@ storm_memset_eq_prod(struct bnx2x_softc *sc, uint16_t eq_prod, uint16_t pfid)
 /*
  * Post a slowpath command.
  *
- * A slowpath command is used to propogate a configuration change through
+ * A slowpath command is used to propagate a configuration change through
  * the controller in a controlled manner, allowing each STORM processor and
  * other H/W blocks to phase in the change.  The commands sent on the
  * slowpath are referred to as ramrods.  Depending on the ramrod used the
@@ -1397,10 +1397,10 @@ bnx2x_del_all_macs(struct bnx2x_softc *sc, struct ecore_vlan_mac_obj *mac_obj,
 	return rc;
 }
 
-int
+static int
 bnx2x_fill_accept_flags(struct bnx2x_softc *sc, uint32_t rx_mode,
-		      unsigned long *rx_accept_flags,
-		      unsigned long *tx_accept_flags)
+			unsigned long *rx_accept_flags,
+			unsigned long *tx_accept_flags)
 {
 	/* Clear the flags first */
 	*rx_accept_flags = 0;
@@ -1438,6 +1438,7 @@ bnx2x_fill_accept_flags(struct bnx2x_softc *sc, uint32_t rx_mode,
 
 		break;
 
+	case BNX2X_RX_MODE_ALLMULTI_PROMISC:
 	case BNX2X_RX_MODE_PROMISC:
 		/*
 		 * According to deffinition of SI mode, iface in promisc mode
@@ -1961,7 +1962,7 @@ static void bnx2x_squeeze_objects(struct bnx2x_softc *sc)
 }
 
 /* stop the controller */
-__attribute__ ((noinline))
+__rte_noinline
 int
 bnx2x_nic_unload(struct bnx2x_softc *sc, uint32_t unload_mode, uint8_t keep_link)
 {
@@ -2001,7 +2002,7 @@ bnx2x_nic_unload(struct bnx2x_softc *sc, uint32_t unload_mode, uint8_t keep_link
 
 	/*
 	 * Nothing to do during unload if previous bnx2x_nic_load()
-	 * did not completed succesfully - all resourses are released.
+	 * did not completed successfully - all resourses are released.
 	 */
 	if ((sc->state == BNX2X_STATE_CLOSED) || (sc->state == BNX2X_STATE_ERROR)) {
 		return 0;
@@ -2219,7 +2220,7 @@ int bnx2x_tx_encap(struct bnx2x_tx_queue *txq, struct rte_mbuf *m0)
 	}
 
 	PMD_TX_LOG(DEBUG,
-		   "start bd: nbytes %d flags %x vlan %x\n",
+		   "start bd: nbytes %d flags %x vlan %x",
 		   tx_start_bd->nbytes,
 		   tx_start_bd->bd_flags.as_bitfield,
 		   tx_start_bd->vlan_or_ethertype);
@@ -3930,7 +3931,7 @@ static void bnx2x_attn_int_deasserted2(struct bnx2x_softc *sc, uint32_t attn)
 			mask1 = REG_RD(sc, PXP2_REG_PXP2_INT_MASK_1);
 			val0 = REG_RD(sc, PXP2_REG_PXP2_INT_STS_0);
 			/*
-			 * If the olny PXP2_EOP_ERROR_BIT is set in
+			 * If the only PXP2_EOP_ERROR_BIT is set in
 			 * STS0 and STS1 - clear it
 			 *
 			 * probably we lose additional attentions between
@@ -5909,7 +5910,7 @@ static void bnx2x_set_234_gates(struct bnx2x_softc *sc, uint8_t close)
 			       (val | HC_CONFIG_0_REG_BLOCK_DISABLE_0));
 
 	} else {
-/* Prevent incomming interrupts in IGU */
+/* Prevent incoming interrupts in IGU */
 		val = REG_RD(sc, IGU_REG_BLOCK_CONFIGURATION);
 
 		if (close)
@@ -7016,34 +7017,6 @@ static int bnx2x_initial_phy_init(struct bnx2x_softc *sc, int load_mode)
 
 	bnx2x_set_requested_fc(sc);
 
-	if (CHIP_REV_IS_SLOW(sc)) {
-		uint32_t bond = CHIP_BOND_ID(sc);
-		uint32_t feat = 0;
-
-		if (CHIP_IS_E2(sc) && CHIP_IS_MODE_4_PORT(sc)) {
-			feat |= ELINK_FEATURE_CONFIG_EMUL_DISABLE_BMAC;
-		} else if (bond & 0x4) {
-			if (CHIP_IS_E3(sc)) {
-				feat |= ELINK_FEATURE_CONFIG_EMUL_DISABLE_XMAC;
-			} else {
-				feat |= ELINK_FEATURE_CONFIG_EMUL_DISABLE_BMAC;
-			}
-		} else if (bond & 0x8) {
-			if (CHIP_IS_E3(sc)) {
-				feat |= ELINK_FEATURE_CONFIG_EMUL_DISABLE_UMAC;
-			} else {
-				feat |= ELINK_FEATURE_CONFIG_EMUL_DISABLE_EMAC;
-			}
-		}
-
-/* disable EMAC for E3 and above */
-		if (bond & 0x2) {
-			feat |= ELINK_FEATURE_CONFIG_EMUL_DISABLE_EMAC;
-		}
-
-		sc->link_params.feature_config_flags |= feat;
-	}
-
 	if (load_mode == LOAD_DIAG) {
 		lp->loopback_mode = ELINK_LOOPBACK_XGXS;
 /* Prefer doing PHY loopback at 10G speed, if possible */
@@ -7151,7 +7124,7 @@ void bnx2x_periodic_callout(struct bnx2x_softc *sc)
 }
 
 /* start the controller */
-static __attribute__ ((noinline))
+static __rte_noinline
 int bnx2x_nic_load(struct bnx2x_softc *sc)
 {
 	uint32_t val;
@@ -9556,8 +9529,8 @@ static void bnx2x_init_rte(struct bnx2x_softc *sc)
 		sc->max_rx_queues = min(BNX2X_VF_MAX_QUEUES_PER_VF,
 					sc->igu_sb_cnt);
 	} else {
-		sc->max_tx_queues = 128;
-		sc->max_rx_queues = 128;
+		sc->max_rx_queues = BNX2X_MAX_RSS_COUNT(sc);
+		sc->max_tx_queues = sc->max_rx_queues;
 	}
 }
 

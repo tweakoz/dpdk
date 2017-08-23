@@ -50,7 +50,6 @@
 #include <rte_memcpy.h>
 #include <rte_memzone.h>
 #include <rte_eal.h>
-#include <rte_per_lcore.h>
 #include <rte_launch.h>
 #include <rte_atomic.h>
 #include <rte_spinlock.h>
@@ -65,7 +64,6 @@
 #include <rte_debug.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
-#include <rte_ring.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 #include <rte_ip.h>
@@ -100,11 +98,11 @@
  *  RTE_MAX is used to ensure that NB_MBUF never goes below a minimum value of 8192
  */
 
-#define NB_MBUF RTE_MAX	(																	\
-				(nb_ports*nb_rx_queue*RTE_TEST_RX_DESC_DEFAULT +							\
-				nb_ports*nb_lcores*MAX_PKT_BURST +											\
-				nb_ports*n_tx_queue*RTE_TEST_TX_DESC_DEFAULT +								\
-				nb_lcores*MEMPOOL_CACHE_SIZE),												\
+#define NB_MBUF RTE_MAX	(						\
+				(nb_ports*nb_rx_queue*nb_rxd +		\
+				nb_ports*nb_lcores*MAX_PKT_BURST +	\
+				nb_ports*n_tx_queue*nb_txd +		\
+				nb_lcores*MEMPOOL_CACHE_SIZE),		\
 				(unsigned)8192)
 
 /*
@@ -198,7 +196,7 @@ static struct rte_eth_conf port_conf = {
 		.hw_ip_checksum = 1, /**< IP checksum offload enabled */
 		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
 		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 0, /**< CRC stripped by hardware */
+		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
@@ -216,7 +214,7 @@ static struct rte_mempool * pktmbuf_pool[NB_SOCKETS];
 
 #if (APP_LOOKUP_METHOD == APP_LOOKUP_EXACT_MATCH)
 
-#ifdef RTE_MACHINE_CPUFLAG_SSE4_2
+#ifdef RTE_ARCH_X86
 #include <rte_hash_crc.h>
 #define DEFAULT_HASH_FUNC       rte_hash_crc
 #else
@@ -817,7 +815,7 @@ parse_args(int argc, char **argv)
 		argv[optind-1] = prgname;
 
 	ret = optind-1;
-	optind = 0; /* reset getopt lib */
+	optind = 1; /* reset getopt lib */
 	return ret;
 }
 
@@ -1010,6 +1008,13 @@ main(int argc, char **argv)
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "Cannot configure device: err=%d, port=%d\n",
 				ret, portid);
+
+		ret = rte_eth_dev_adjust_nb_rx_tx_desc(portid, &nb_rxd,
+						       &nb_txd);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				 "Cannot adjust number of descriptors: err=%d, port=%d\n",
+				 ret, portid);
 
 		rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
 		print_ethaddr(" Address:", &ports_eth_addr[portid]);

@@ -44,6 +44,7 @@
 #include <sched.h>
 
 #include <rte_per_lcore.h>
+#include <rte_config.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -60,6 +61,7 @@ extern "C" {
 enum rte_lcore_role_t {
 	ROLE_RTE,
 	ROLE_OFF,
+	ROLE_SERVICE,
 };
 
 /**
@@ -79,6 +81,7 @@ enum rte_proc_type_t {
 struct rte_config {
 	uint32_t master_lcore;       /**< Id of the master lcore */
 	uint32_t lcore_count;        /**< Number of available logical cores. */
+	uint32_t service_lcore_count;/**< Number of available service cores. */
 	enum rte_lcore_role_t lcore_role[RTE_MAX_LCORE]; /**< State of cores. */
 
 	/** Primary or secondary configuration */
@@ -145,15 +148,47 @@ int rte_eal_iopl_init(void);
  * This behavior may change in the future.
  *
  * @param argc
- *   The argc argument that was given to the main() function.
+ *   A non-negative value.  If it is greater than 0, the array members
+ *   for argv[0] through argv[argc] (non-inclusive) shall contain pointers
+ *   to strings.
  * @param argv
- *   The argv argument that was given to the main() function.
+ *   An array of strings.  The contents of the array, as well as the strings
+ *   which are pointed to by the array, may be modified by this function.
  * @return
  *   - On success, the number of parsed arguments, which is greater or
  *     equal to zero. After the call to rte_eal_init(),
- *     all arguments argv[x] with x < ret may be modified and should
- *     not be accessed by the application.
- *   - On failure, a negative error value.
+ *     all arguments argv[x] with x < ret may have been modified by this
+ *     function call and should not be further interpreted by the
+ *     application.  The EAL does not take any ownership of the memory used
+ *     for either the argv array, or its members.
+ *   - On failure, -1 and rte_errno is set to a value indicating the cause
+ *     for failure.  In some instances, the application will need to be
+ *     restarted as part of clearing the issue.
+ *
+ *   Error codes returned via rte_errno:
+ *     EACCES indicates a permissions issue.
+ *
+ *     EAGAIN indicates either a bus or system resource was not available,
+ *            setup may be attempted again.
+ *
+ *     EALREADY indicates that the rte_eal_init function has already been
+ *              called, and cannot be called again.
+ *
+ *     EFAULT indicates the tailq configuration name was not found in
+ *            memory configuration.
+ *
+ *     EINVAL indicates invalid parameters were passed as argv/argc.
+ *
+ *     ENOMEM indicates failure likely caused by an out-of-memory condition.
+ *
+ *     ENODEV indicates memory setup issues.
+ *
+ *     ENOTSUP indicates that the EAL cannot initialize on this system.
+ *
+ *     EPROTO indicates that the PCI bus is either not present, or is not
+ *            readable by the eal.
+ *
+ *     ENOEXEC indicates that a service core failed to launch successfully.
  */
 int rte_eal_init(int argc, char **argv);
 
@@ -251,6 +286,12 @@ static inline int rte_gettid(void)
 		RTE_PER_LCORE(_thread_id) = rte_sys_gettid();
 	return RTE_PER_LCORE(_thread_id);
 }
+
+#define RTE_INIT(func) \
+static void __attribute__((constructor, used)) func(void)
+
+#define RTE_INIT_PRIO(func, prio) \
+static void __attribute__((constructor(prio), used)) func(void)
 
 #ifdef __cplusplus
 }

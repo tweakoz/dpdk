@@ -61,10 +61,8 @@
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
-#include <rte_debug.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
-#include <rte_ring.h>
 #include <rte_debug.h>
 #include <rte_interrupts.h>
 #include <rte_pci.h>
@@ -194,7 +192,7 @@ smp_parse_args(int argc, char **argv)
 			ports[num_ports++] = (uint8_t)i;
 
 	ret = optind-1;
-	optind = 0; /* reset getopt lib */
+	optind = 1; /* reset getopt lib */
 
 	return ret;
 }
@@ -214,7 +212,7 @@ smp_port_init(uint8_t port, struct rte_mempool *mbuf_pool, uint16_t num_queues)
 				.hw_ip_checksum = 1, /**< IP checksum offload enabled */
 				.hw_vlan_filter = 0, /**< VLAN filtering disabled */
 				.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-				.hw_strip_crc   = 0, /**< CRC stripped by hardware */
+				.hw_strip_crc   = 1, /**< CRC stripped by hardware */
 			},
 			.rx_adv_conf = {
 				.rss_conf = {
@@ -230,6 +228,8 @@ smp_port_init(uint8_t port, struct rte_mempool *mbuf_pool, uint16_t num_queues)
 	struct rte_eth_dev_info info;
 	int retval;
 	uint16_t q;
+	uint16_t nb_rxd = RX_RING_SIZE;
+	uint16_t nb_txd = TX_RING_SIZE;
 
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY)
 		return 0;
@@ -247,8 +247,12 @@ smp_port_init(uint8_t port, struct rte_mempool *mbuf_pool, uint16_t num_queues)
 	if (retval < 0)
 		return retval;
 
+	retval = rte_eth_dev_adjust_nb_rx_tx_desc(port, &nb_rxd, &nb_txd);
+	if (retval < 0)
+		return retval;
+
 	for (q = 0; q < rx_rings; q ++) {
-		retval = rte_eth_rx_queue_setup(port, q, RX_RING_SIZE,
+		retval = rte_eth_rx_queue_setup(port, q, nb_rxd,
 				rte_eth_dev_socket_id(port),
 				&info.default_rxconf,
 				mbuf_pool);
@@ -257,7 +261,7 @@ smp_port_init(uint8_t port, struct rte_mempool *mbuf_pool, uint16_t num_queues)
 	}
 
 	for (q = 0; q < tx_rings; q ++) {
-		retval = rte_eth_tx_queue_setup(port, q, TX_RING_SIZE,
+		retval = rte_eth_tx_queue_setup(port, q, nb_txd,
 				rte_eth_dev_socket_id(port),
 				NULL);
 		if (retval < 0)

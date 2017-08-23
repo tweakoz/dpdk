@@ -294,7 +294,7 @@ rte_malloc_get_socket_stats(int socket,
 /**
  * Dump statistics.
  *
- * Dump for the specified type to the console. If the type argument is
+ * Dump for the specified type to a file. If the type argument is
  * NULL, all memory types will be dumped.
  *
  * @param f
@@ -327,9 +327,9 @@ rte_malloc_set_limit(const char *type, size_t max);
  * rte_malloc
  *
  * @param addr
- *   Adress obtained from a previous rte_malloc call
+ *   Address obtained from a previous rte_malloc call
  * @return
- *   NULL on error
+ *   RTE_BAD_PHYS_ADDR on error
  *   otherwise return physical address of the buffer
  */
 phys_addr_t

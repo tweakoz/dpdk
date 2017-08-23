@@ -56,8 +56,10 @@
 #ifdef RTE_SCHED_VECTOR
 #include <rte_vect.h>
 
-#if defined(__SSE4__)
+#ifdef RTE_ARCH_X86
 #define SCHED_VECTOR_SSE4
+#elif defined(RTE_MACHINE_CPUFLAG_NEON)
+#define SCHED_VECTOR_NEON
 #endif
 
 #endif
@@ -734,19 +736,25 @@ rte_sched_port_config(struct rte_sched_port_params *params)
 void
 rte_sched_port_free(struct rte_sched_port *port)
 {
-	unsigned int queue;
+	uint32_t qindex;
+	uint32_t n_queues_per_port;
 
 	/* Check user parameters */
 	if (port == NULL)
 		return;
 
-	/* Free enqueued mbufs */
-	for (queue = 0; queue < RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE; queue++) {
-		struct rte_mbuf **mbufs = rte_sched_port_qbase(port, queue);
-		unsigned int i;
+	n_queues_per_port = rte_sched_port_queues_per_port(port);
 
-		for (i = 0; i < rte_sched_port_qsize(port, queue); i++)
-			rte_pktmbuf_free(mbufs[i]);
+	/* Free enqueued mbufs */
+	for (qindex = 0; qindex < n_queues_per_port; qindex++) {
+		struct rte_mbuf **mbufs = rte_sched_port_qbase(port, qindex);
+		uint16_t qsize = rte_sched_port_qsize(port, qindex);
+		struct rte_sched_queue *queue = port->queue + qindex;
+		uint16_t qr = queue->qr & (qsize - 1);
+		uint16_t qw = queue->qw & (qsize - 1);
+
+		for (; qr != qw; qr = (qr + 1) & (qsize - 1))
+			rte_pktmbuf_free(mbufs[qr]);
 	}
 
 	rte_bitmap_free(port->bmp);
@@ -1724,6 +1732,26 @@ grinder_pipe_exists(struct rte_sched_port *port, uint32_t base_pipe)
 		return 0;
 
 	return 1;
+}
+
+#elif defined(SCHED_VECTOR_NEON)
+
+static inline int
+grinder_pipe_exists(struct rte_sched_port *port, uint32_t base_pipe)
+{
+	uint32x4_t index, pipes;
+	uint32_t *pos = (uint32_t *)port->grinder_base_bmp_pos;
+
+	index = vmovq_n_u32(base_pipe);
+	pipes = vld1q_u32(pos);
+	if (!vminvq_u32(veorq_u32(pipes, index)))
+		return 1;
+
+	pipes = vld1q_u32(pos + 4);
+	if (!vminvq_u32(veorq_u32(pipes, index)))
+		return 1;
+
+	return 0;
 }
 
 #else

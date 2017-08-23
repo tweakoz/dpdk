@@ -65,8 +65,6 @@
 #include <rte_debug.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
-#include <rte_ring.h>
-#include <rte_log.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 #include <rte_string_fns.h>
@@ -131,7 +129,7 @@ static struct rte_eth_conf port_conf = {
 		.hw_ip_checksum = 0,    /* IP checksum offload disabled */
 		.hw_vlan_filter = 0,    /* VLAN filtering disabled */
 		.jumbo_frame = 0,       /* Jumbo Frame Support disabled */
-		.hw_strip_crc = 0,      /* CRC stripped by hardware */
+		.hw_strip_crc = 1,      /* CRC stripped by hardware */
 	},
 	.txmode = {
 		.mq_mode = ETH_MQ_TX_NONE,
@@ -606,6 +604,8 @@ static void
 init_port(uint8_t port)
 {
 	int ret;
+	uint16_t nb_rxd = NB_RXD;
+	uint16_t nb_txd = NB_TXD;
 
 	/* Initialise device and RX/TX queues */
 	RTE_LOG(INFO, APP, "Initialising port %u ...\n", (unsigned)port);
@@ -615,13 +615,18 @@ init_port(uint8_t port)
 		rte_exit(EXIT_FAILURE, "Could not configure port%u (%d)\n",
 		            (unsigned)port, ret);
 
-	ret = rte_eth_rx_queue_setup(port, 0, NB_RXD,
+	ret = rte_eth_dev_adjust_nb_rx_tx_desc(port, &nb_rxd, &nb_txd);
+	if (ret < 0)
+		rte_exit(EXIT_FAILURE, "Could not adjust number of descriptors "
+				"for port%u (%d)\n", (unsigned)port, ret);
+
+	ret = rte_eth_rx_queue_setup(port, 0, nb_rxd,
 		rte_eth_dev_socket_id(port), NULL, pktmbuf_pool);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Could not setup up RX queue for "
 				"port%u (%d)\n", (unsigned)port, ret);
 
-	ret = rte_eth_tx_queue_setup(port, 0, NB_TXD,
+	ret = rte_eth_tx_queue_setup(port, 0, nb_txd,
 		rte_eth_dev_socket_id(port), NULL);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Could not setup up TX queue for "

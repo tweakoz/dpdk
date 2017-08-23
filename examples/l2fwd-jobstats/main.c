@@ -38,7 +38,6 @@
 #include <ctype.h>
 #include <getopt.h>
 
-#include <rte_alarm.h>
 #include <rte_common.h>
 #include <rte_log.h>
 #include <rte_malloc.h>
@@ -46,7 +45,6 @@
 #include <rte_memcpy.h>
 #include <rte_memzone.h>
 #include <rte_eal.h>
-#include <rte_per_lcore.h>
 #include <rte_launch.h>
 #include <rte_atomic.h>
 #include <rte_cycles.h>
@@ -59,7 +57,6 @@
 #include <rte_debug.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
-#include <rte_ring.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 #include <rte_spinlock.h>
@@ -68,6 +65,7 @@
 #include <rte_jobstats.h>
 #include <rte_timer.h>
 #include <rte_alarm.h>
+#include <rte_pause.h>
 
 #define RTE_LOGTYPE_L2FWD RTE_LOGTYPE_USER1
 
@@ -127,7 +125,7 @@ static const struct rte_eth_conf port_conf = {
 		.hw_ip_checksum = 0, /**< IP checksum offload disabled */
 		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
 		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 0, /**< CRC stripped by hardware */
+		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
 	},
 	.txmode = {
 		.mq_mode = ETH_MQ_TX_NONE,
@@ -710,7 +708,7 @@ l2fwd_parse_args(int argc, char **argv)
 		argv[optind-1] = prgname;
 
 	ret = optind-1;
-	optind = 0; /* reset getopt lib */
+	optind = 1; /* reset getopt lib */
 	return ret;
 }
 
@@ -883,6 +881,13 @@ main(int argc, char **argv)
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "Cannot configure device: err=%d, port=%u\n",
 				  ret, (unsigned) portid);
+
+		ret = rte_eth_dev_adjust_nb_rx_tx_desc(portid, &nb_rxd,
+						       &nb_txd);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				 "Cannot adjust number of descriptors: err=%d, port=%u\n",
+				 ret, (unsigned) portid);
 
 		rte_eth_macaddr_get(portid, &l2fwd_ports_eth_addr[portid]);
 

@@ -53,7 +53,6 @@
 #include <rte_memcpy.h>
 #include <rte_memzone.h>
 #include <rte_eal.h>
-#include <rte_per_lcore.h>
 #include <rte_launch.h>
 #include <rte_atomic.h>
 #include <rte_spinlock.h>
@@ -77,8 +76,7 @@
 
 #define RTE_LOGTYPE_L2FWD RTE_LOGTYPE_USER1
 #define MBUF_NAME	"mbuf_pool_%d"
-#define MBUF_SIZE	\
-(RTE_MBUF_DEFAULT_DATAROOM + sizeof(struct rte_mbuf) + RTE_PKTMBUF_HEADROOM)
+#define MBUF_DATA_SIZE	RTE_MBUF_DEFAULT_BUF_SIZE
 #define NB_MBUF   8192
 #define RING_MASTER_NAME	"l2fwd_ring_m2s_"
 #define RING_SLAVE_NAME		"l2fwd_ring_s2m_"
@@ -163,7 +161,7 @@ static const struct rte_eth_conf port_conf = {
 		.hw_ip_checksum = 0, /**< IP checksum offload disabled */
 		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
 		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 0, /**< CRC stripped by hardware */
+		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
 	},
 	.txmode = {
 		.mq_mode = ETH_MQ_TX_NONE,
@@ -672,6 +670,8 @@ l2fwd_main_loop(void)
 					port_statistics[portid].tx += sent;
 
 			}
+
+			prev_tsc = cur_tsc;
 		}
 
 		/*
@@ -865,7 +865,7 @@ l2fwd_parse_args(int argc, char **argv)
 		return -1;
 	}
 	ret = optind-1;
-	optind = 0; /* reset getopt lib */
+	optind = 1; /* reset getopt lib */
 	return ret;
 }
 
@@ -936,7 +936,6 @@ main(int argc, char **argv)
 	unsigned rx_lcore_id;
 	unsigned nb_ports_in_mask = 0;
 	unsigned i;
-	int flags = 0;
 	uint64_t prev_tsc, diff_tsc, cur_tsc, timer_tsc;
 
 	/* Save cpu_affinity first, restore it in case it's floating process option */
@@ -986,17 +985,12 @@ main(int argc, char **argv)
 		if ((l2fwd_enabled_port_mask & (1 << portid)) == 0)
 			continue;
 		char buf_name[RTE_MEMPOOL_NAMESIZE];
-		flags = MEMPOOL_F_SP_PUT | MEMPOOL_F_SC_GET;
 		snprintf(buf_name, RTE_MEMPOOL_NAMESIZE, MBUF_NAME, portid);
 		l2fwd_pktmbuf_pool[portid] =
-			rte_mempool_create(buf_name, NB_MBUF,
-					   MBUF_SIZE, 32,
-					   sizeof(struct rte_pktmbuf_pool_private),
-					   rte_pktmbuf_pool_init, NULL,
-					   rte_pktmbuf_init, NULL,
-					   rte_socket_id(), flags);
+			rte_pktmbuf_pool_create(buf_name, NB_MBUF, 32,
+				0, MBUF_DATA_SIZE, rte_socket_id());
 		if (l2fwd_pktmbuf_pool[portid] == NULL)
-			rte_exit(EXIT_FAILURE, "Cannot init mbuf pool\n");
+			rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
 		printf("Create mbuf %s\n", buf_name);
 	}
@@ -1084,6 +1078,13 @@ main(int argc, char **argv)
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "Cannot configure device: err=%d, port=%u\n",
 				  ret, (unsigned) portid);
+
+		ret = rte_eth_dev_adjust_nb_rx_tx_desc(portid, &nb_rxd,
+						       &nb_txd);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				 "rte_eth_dev_adjust_nb_rx_tx_desc: err=%d, port=%u\n",
+				 ret, (unsigned) portid);
 
 		rte_eth_macaddr_get(portid,&l2fwd_ports_eth_addr[portid]);
 

@@ -38,20 +38,20 @@
 /* Verbs header. */
 /* ISO C doesn't support unnamed structs/unions, disabling -pedantic. */
 #ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-pedantic"
+#pragma GCC diagnostic ignored "-Wpedantic"
 #endif
 #include <infiniband/verbs.h>
 #ifdef PEDANTIC
-#pragma GCC diagnostic error "-pedantic"
+#pragma GCC diagnostic error "-Wpedantic"
 #endif
 
 /* DPDK headers don't like -pedantic. */
 #ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-pedantic"
+#pragma GCC diagnostic ignored "-Wpedantic"
 #endif
 #include <rte_ethdev.h>
 #ifdef PEDANTIC
-#pragma GCC diagnostic error "-pedantic"
+#pragma GCC diagnostic error "-Wpedantic"
 #endif
 
 #include "mlx5.h"
@@ -347,6 +347,8 @@ priv_special_flow_enable_all(struct priv *priv)
 {
 	enum hash_rxq_flow_type flow_type;
 
+	if (priv->isolated)
+		return 0;
 	for (flow_type = HASH_RXQ_FLOW_TYPE_PROMISC;
 			flow_type != HASH_RXQ_FLOW_TYPE_MAC;
 			++flow_type) {

@@ -33,14 +33,14 @@
 
 /* DPDK headers don't like -pedantic. */
 #ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-pedantic"
+#pragma GCC diagnostic ignored "-Wpedantic"
 #endif
 #include <rte_ether.h>
 #include <rte_ethdev.h>
 #include <rte_interrupts.h>
 #include <rte_alarm.h>
 #ifdef PEDANTIC
-#pragma GCC diagnostic error "-pedantic"
+#pragma GCC diagnostic error "-Wpedantic"
 #endif
 
 #include "mlx5.h"
@@ -72,6 +72,9 @@ mlx5_dev_start(struct rte_eth_dev *dev)
 		priv_unlock(priv);
 		return 0;
 	}
+	/* Update Rx/Tx callback. */
+	priv_select_tx_function(priv);
+	priv_select_rx_function(priv);
 	DEBUG("%p: allocating and configuring hash RX queues", (void *)dev);
 	err = priv_create_hash_rxqs(priv);
 	if (!err)
@@ -82,14 +85,34 @@ mlx5_dev_start(struct rte_eth_dev *dev)
 		ERROR("%p: an error occurred while configuring hash RX queues:"
 		      " %s",
 		      (void *)priv, strerror(err));
-		/* Rollback. */
-		priv_special_flow_disable_all(priv);
-		priv_mac_addrs_disable(priv);
-		priv_destroy_hash_rxqs(priv);
+		goto error;
 	}
 	if (dev->data->dev_conf.fdir_conf.mode != RTE_FDIR_MODE_NONE)
 		priv_fdir_enable(priv);
+	err = priv_flow_start(priv);
+	if (err) {
+		priv->started = 0;
+		ERROR("%p: an error occurred while configuring flows:"
+		      " %s",
+		      (void *)priv, strerror(err));
+		goto error;
+	}
+	err = priv_rx_intr_vec_enable(priv);
+	if (err) {
+		ERROR("%p: RX interrupt vector creation failed",
+		      (void *)priv);
+		goto error;
+	}
 	priv_dev_interrupt_handler_install(priv, dev);
+	priv_xstats_init(priv);
+	priv_unlock(priv);
+	return 0;
+error:
+	/* Rollback. */
+	priv_special_flow_disable_all(priv);
+	priv_mac_addrs_disable(priv);
+	priv_destroy_hash_rxqs(priv);
+	priv_flow_stop(priv);
 	priv_unlock(priv);
 	return -err;
 }
@@ -120,6 +143,8 @@ mlx5_dev_stop(struct rte_eth_dev *dev)
 	priv_mac_addrs_disable(priv);
 	priv_destroy_hash_rxqs(priv);
 	priv_fdir_disable(priv);
+	priv_flow_stop(priv);
+	priv_rx_intr_vec_disable(priv);
 	priv_dev_interrupt_handler_uninstall(priv, dev);
 	priv->started = 0;
 	priv_unlock(priv);

@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -50,21 +50,6 @@
 #include "esp.h"
 #include "ipip.h"
 
-static inline void
-random_iv_u64(uint64_t *buf, uint16_t n)
-{
-	uint32_t left = n & 0x7;
-	uint32_t i;
-
-	RTE_ASSERT((n & 0x3) == 0);
-
-	for (i = 0; i < (n >> 3); i++)
-		buf[i] = rte_rand();
-
-	if (left)
-		*((uint32_t *)&buf[i]) = (uint32_t)lrand48();
-}
-
 int
 esp_inbound(struct rte_mbuf *m, struct ipsec_sa *sa,
 		struct rte_crypto_op *cop)
@@ -93,33 +78,85 @@ esp_inbound(struct rte_mbuf *m, struct ipsec_sa *sa,
 		sizeof(struct esp_hdr) - sa->iv_len - sa->digest_len;
 
 	if ((payload_len & (sa->block_size - 1)) || (payload_len <= 0)) {
-		RTE_LOG(DEBUG, IPSEC_ESP, "payload %d not multiple of %u\n",
+		RTE_LOG_DP(DEBUG, IPSEC_ESP, "payload %d not multiple of %u\n",
 				payload_len, sa->block_size);
 		return -EINVAL;
 	}
 
-	sym_cop = (struct rte_crypto_sym_op *)(cop + 1);
-
+	sym_cop = get_sym_cop(cop);
 	sym_cop->m_src = m;
-	sym_cop->cipher.data.offset =  ip_hdr_len + sizeof(struct esp_hdr) +
-		sa->iv_len;
-	sym_cop->cipher.data.length = payload_len;
 
-	sym_cop->cipher.iv.data = rte_pktmbuf_mtod_offset(m, void*,
-			 ip_hdr_len + sizeof(struct esp_hdr));
-	sym_cop->cipher.iv.phys_addr = rte_pktmbuf_mtophys_offset(m,
-			 ip_hdr_len + sizeof(struct esp_hdr));
-	sym_cop->cipher.iv.length = sa->iv_len;
+	if (sa->aead_algo == RTE_CRYPTO_AEAD_AES_GCM) {
+		sym_cop->aead.data.offset =  ip_hdr_len + sizeof(struct esp_hdr) +
+			sa->iv_len;
+		sym_cop->aead.data.length = payload_len;
 
-	sym_cop->auth.data.offset = ip_hdr_len;
-	sym_cop->auth.data.length = sizeof(struct esp_hdr) +
-		sa->iv_len + payload_len;
+		struct cnt_blk *icb;
+		uint8_t *aad;
+		uint8_t *iv = RTE_PTR_ADD(ip4, ip_hdr_len + sizeof(struct esp_hdr));
 
-	sym_cop->auth.digest.data = rte_pktmbuf_mtod_offset(m, void*,
-			rte_pktmbuf_pkt_len(m) - sa->digest_len);
-	sym_cop->auth.digest.phys_addr = rte_pktmbuf_mtophys_offset(m,
-			rte_pktmbuf_pkt_len(m) - sa->digest_len);
-	sym_cop->auth.digest.length = sa->digest_len;
+		icb = get_cnt_blk(m);
+		icb->salt = sa->salt;
+		memcpy(&icb->iv, iv, 8);
+		icb->cnt = rte_cpu_to_be_32(1);
+
+		aad = get_aad(m);
+		memcpy(aad, iv - sizeof(struct esp_hdr), 8);
+		sym_cop->aead.aad.data = aad;
+		sym_cop->aead.aad.phys_addr = rte_pktmbuf_mtophys_offset(m,
+				aad - rte_pktmbuf_mtod(m, uint8_t *));
+
+		sym_cop->aead.digest.data = rte_pktmbuf_mtod_offset(m, void*,
+				rte_pktmbuf_pkt_len(m) - sa->digest_len);
+		sym_cop->aead.digest.phys_addr = rte_pktmbuf_mtophys_offset(m,
+				rte_pktmbuf_pkt_len(m) - sa->digest_len);
+	} else {
+		sym_cop->cipher.data.offset =  ip_hdr_len + sizeof(struct esp_hdr) +
+			sa->iv_len;
+		sym_cop->cipher.data.length = payload_len;
+
+		struct cnt_blk *icb;
+		uint8_t *iv = RTE_PTR_ADD(ip4, ip_hdr_len + sizeof(struct esp_hdr));
+		uint8_t *iv_ptr = rte_crypto_op_ctod_offset(cop,
+					uint8_t *, IV_OFFSET);
+
+		switch (sa->cipher_algo) {
+		case RTE_CRYPTO_CIPHER_NULL:
+		case RTE_CRYPTO_CIPHER_AES_CBC:
+			/* Copy IV at the end of crypto operation */
+			rte_memcpy(iv_ptr, iv, sa->iv_len);
+			break;
+		case RTE_CRYPTO_CIPHER_AES_CTR:
+			icb = get_cnt_blk(m);
+			icb->salt = sa->salt;
+			memcpy(&icb->iv, iv, 8);
+			icb->cnt = rte_cpu_to_be_32(1);
+			break;
+		default:
+			RTE_LOG(ERR, IPSEC_ESP, "unsupported cipher algorithm %u\n",
+					sa->cipher_algo);
+			return -EINVAL;
+		}
+
+		switch (sa->auth_algo) {
+		case RTE_CRYPTO_AUTH_NULL:
+		case RTE_CRYPTO_AUTH_SHA1_HMAC:
+		case RTE_CRYPTO_AUTH_SHA256_HMAC:
+			sym_cop->auth.data.offset = ip_hdr_len;
+			sym_cop->auth.data.length = sizeof(struct esp_hdr) +
+				sa->iv_len + payload_len;
+			break;
+		default:
+			RTE_LOG(ERR, IPSEC_ESP, "unsupported auth algorithm %u\n",
+					sa->auth_algo);
+			return -EINVAL;
+		}
+
+		sym_cop->auth.digest.data = rte_pktmbuf_mtod_offset(m, void*,
+				rte_pktmbuf_pkt_len(m) - sa->digest_len);
+		sym_cop->auth.digest.phys_addr = rte_pktmbuf_mtophys_offset(m,
+				rte_pktmbuf_pkt_len(m) - sa->digest_len);
+	}
 
 	return 0;
 }
@@ -282,39 +319,93 @@ esp_outbound(struct rte_mbuf *m, struct ipsec_sa *sa,
 
 	sa->seq++;
 	esp->spi = rte_cpu_to_be_32(sa->spi);
-	esp->seq = rte_cpu_to_be_32(sa->seq);
+	esp->seq = rte_cpu_to_be_32((uint32_t)sa->seq);
 
-	if (sa->cipher_algo == RTE_CRYPTO_CIPHER_AES_CBC)
-		random_iv_u64((uint64_t *)(esp + 1), sa->iv_len);
+	uint64_t *iv = (uint64_t *)(esp + 1);
 
-	/* Fill pad_len using default sequential scheme */
-	for (i = 0; i < pad_len - 2; i++)
-		padding[i] = i + 1;
-	padding[pad_len - 2] = pad_len - 2;
-	padding[pad_len - 1] = nlp;
-
-	sym_cop = (struct rte_crypto_sym_op *)(cop + 1);
-
+	sym_cop = get_sym_cop(cop);
 	sym_cop->m_src = m;
-	sym_cop->cipher.data.offset = ip_hdr_len + sizeof(struct esp_hdr) +
-			sa->iv_len;
-	sym_cop->cipher.data.length = pad_payload_len;
 
-	sym_cop->cipher.iv.data = rte_pktmbuf_mtod_offset(m, uint8_t *,
-			 ip_hdr_len + sizeof(struct esp_hdr));
-	sym_cop->cipher.iv.phys_addr = rte_pktmbuf_mtophys_offset(m,
-			 ip_hdr_len + sizeof(struct esp_hdr));
-	sym_cop->cipher.iv.length = sa->iv_len;
+	if (sa->aead_algo == RTE_CRYPTO_AEAD_AES_GCM) {
+		uint8_t *aad;
 
-	sym_cop->auth.data.offset = ip_hdr_len;
-	sym_cop->auth.data.length = sizeof(struct esp_hdr) + sa->iv_len +
-		pad_payload_len;
+		*iv = sa->seq;
+		sym_cop->aead.data.offset = ip_hdr_len +
+			sizeof(struct esp_hdr) + sa->iv_len;
+		sym_cop->aead.data.length = pad_payload_len;
 
-	sym_cop->auth.digest.data = rte_pktmbuf_mtod_offset(m, uint8_t *,
+		/* Fill pad_len using default sequential scheme */
+		for (i = 0; i < pad_len - 2; i++)
+			padding[i] = i + 1;
+		padding[pad_len - 2] = pad_len - 2;
+		padding[pad_len - 1] = nlp;
+
+		struct cnt_blk *icb = get_cnt_blk(m);
+		icb->salt = sa->salt;
+		icb->iv = sa->seq;
+		icb->cnt = rte_cpu_to_be_32(1);
+
+		aad = get_aad(m);
+		memcpy(aad, esp, 8);
+		sym_cop->aead.aad.data = aad;
+		sym_cop->aead.aad.phys_addr = rte_pktmbuf_mtophys_offset(m,
+				aad - rte_pktmbuf_mtod(m, uint8_t *));
+
+		sym_cop->aead.digest.data = rte_pktmbuf_mtod_offset(m, uint8_t *,
 			rte_pktmbuf_pkt_len(m) - sa->digest_len);
-	sym_cop->auth.digest.phys_addr = rte_pktmbuf_mtophys_offset(m,
+		sym_cop->aead.digest.phys_addr = rte_pktmbuf_mtophys_offset(m,
 			rte_pktmbuf_pkt_len(m) - sa->digest_len);
-	sym_cop->auth.digest.length = sa->digest_len;
+	} else {
+		switch (sa->cipher_algo) {
+		case RTE_CRYPTO_CIPHER_NULL:
+		case RTE_CRYPTO_CIPHER_AES_CBC:
+			memset(iv, 0, sa->iv_len);
+			sym_cop->cipher.data.offset = ip_hdr_len +
+				sizeof(struct esp_hdr);
+			sym_cop->cipher.data.length = pad_payload_len + sa->iv_len;
+			break;
+		case RTE_CRYPTO_CIPHER_AES_CTR:
+			*iv = sa->seq;
+			sym_cop->cipher.data.offset = ip_hdr_len +
+				sizeof(struct esp_hdr) + sa->iv_len;
+			sym_cop->cipher.data.length = pad_payload_len;
+			break;
+		default:
+			RTE_LOG(ERR, IPSEC_ESP, "unsupported cipher algorithm %u\n",
+					sa->cipher_algo);
+			return -EINVAL;
+		}
+
+		/* Fill pad_len using default sequential scheme */
+		for (i = 0; i < pad_len - 2; i++)
+			padding[i] = i + 1;
+		padding[pad_len - 2] = pad_len - 2;
+		padding[pad_len - 1] = nlp;
+
+		struct cnt_blk *icb = get_cnt_blk(m);
+		icb->salt = sa->salt;
+		icb->iv = sa->seq;
+		icb->cnt = rte_cpu_to_be_32(1);
+
+		switch (sa->auth_algo) {
+		case RTE_CRYPTO_AUTH_NULL:
+		case RTE_CRYPTO_AUTH_SHA1_HMAC:
+		case RTE_CRYPTO_AUTH_SHA256_HMAC:
+			sym_cop->auth.data.offset = ip_hdr_len;
+			sym_cop->auth.data.length = sizeof(struct esp_hdr) +
+				sa->iv_len + pad_payload_len;
+			break;
+		default:
+			RTE_LOG(ERR, IPSEC_ESP, "unsupported auth algorithm %u\n",
+					sa->auth_algo);
+			return -EINVAL;
+		}
+
+		sym_cop->auth.digest.data = rte_pktmbuf_mtod_offset(m, uint8_t *,
+				rte_pktmbuf_pkt_len(m) - sa->digest_len);
+		sym_cop->auth.digest.phys_addr = rte_pktmbuf_mtophys_offset(m,
+				rte_pktmbuf_pkt_len(m) - sa->digest_len);
+	}
 
 	return 0;
 }

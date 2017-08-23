@@ -55,8 +55,6 @@
 #include <rte_lcore.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
-#include <rte_ring.h>
-#include <rte_memory.h>
 #include <rte_memcpy.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
@@ -65,6 +63,7 @@
 #include <rte_ether.h>
 #include <rte_ethdev.h>
 #include <rte_string_fns.h>
+#include <rte_flow.h>
 
 #include "testpmd.h"
 
